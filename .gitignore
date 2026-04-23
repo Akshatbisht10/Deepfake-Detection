@@ -1,0 +1,28 @@
+# Dataset directories (very large)
+DFD_manipulated_sequences/
+DFD_original sequences/
+dataset_faces/
+dataset_sequences/
+dataset_split/
+debug_faces/
+debug_faces_cv2/
+
+# Model weights (large binary files)
+*.pth
+
+# Virtual environment
+venv/
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+
+# Temp files
+tempCodeRunnerFile.python
+preds.txt
+
+# OS files
+Thumbs.db
+.DS_Store
