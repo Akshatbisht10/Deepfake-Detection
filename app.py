@@ -5,8 +5,8 @@ import cv2
 from torchvision import transforms
 from PIL import Image
 
-from train_cnn_lstm import SEQ_LEN, IMG_SIZE
-from st_vit_model import ST_ViT
+from src.training.train_cnn_lstm import SEQ_LEN, IMG_SIZE
+from src.models.st_vit_model import ST_ViT
 
 # Configuration Let's use CPU for inference as it's typically safer for web apps 
 # unless specifically running on a dedicated GPU server.

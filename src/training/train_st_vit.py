@@ -45,10 +45,10 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
 # Import the dataset class from the existing CNN+LSTM script
-from train_cnn_lstm import VideoSequenceDataset
+from src.training.train_cnn_lstm import VideoSequenceDataset
 
 # Import the ST-ViT model
-from st_vit_model import ST_ViT, count_parameters
+from src.models.st_vit_model import ST_ViT, count_parameters
 
 
 # ─── Configuration ───────────────────────────────────────────────────────────

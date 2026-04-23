@@ -24,10 +24,10 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
-from st_vit_model import ST_ViT
-from train_cnn_only import CNN_Only
-from train_cnn_lstm_v2 import CNN_LSTM_V2
-from train_vit_only import ViT_Only
+from src.models.st_vit_model import ST_ViT
+from src.training.train_cnn_only import CNN_Only
+from src.training.train_cnn_lstm_v2 import CNN_LSTM_V2
+from src.training.train_vit_only import ViT_Only
 
 # ─── Configuration ───────────────────────────────────────────────────────────
 DATA_DIR = "dataset_sequences"

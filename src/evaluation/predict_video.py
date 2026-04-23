@@ -6,7 +6,7 @@ from torchvision import transforms
 from PIL import Image
 
 # Import the model architecture from the training script
-from train_cnn_lstm import CNN_LSTM, SEQ_LEN, IMG_SIZE
+from src.training.train_cnn_lstm import CNN_LSTM, SEQ_LEN, IMG_SIZE
 
 # Configuration
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")

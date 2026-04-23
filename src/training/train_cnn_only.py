@@ -1,18 +1,21 @@
 """
-CNN+LSTM V2 Baseline for Deepfake Detection.
+CNN-Only Baseline for Deepfake Detection.
 
 Architecture:
-  ResNet-50 (pretrained) -> 2048-dim features per frame
-  -> Unidirectional 2-layer LSTM (hidden=256) -> last hidden state
-  -> FC(256->1)
+  ResNet-50 (pretrained) -> Global Average Pool -> FC(2048->256) -> ReLU
+  -> Dropout(0.5) -> FC(256->1)
 
-Key differences from ST-ViT:
-  - Uses ResNet-50 (same backbone as ST-ViT, not ResNet-18)
-  - Unidirectional LSTM (not bidirectional)
-  - No Vision Transformer encoder
-  - Simpler classifier head
+Strategy:
+  Each frame is classified independently. Video-level prediction is the
+  average of per-frame sigmoid probabilities across the 20-frame sequence.
 
-Training config matches ST-ViT V2 for fair comparison.
+This model has NO temporal modeling — it serves as a pure spatial baseline
+to demonstrate the value of LSTM and ViT temporal components in ST-ViT.
+
+Training config matches ST-ViT V2 for fair comparison:
+  - AdamW + weight decay, label smoothing, cosine annealing LR, FP16
+  - Same dataset (dataset_sequences, 150 videos/class)
+  - Same metrics (Accuracy, F1, Precision, Recall, AUC-ROC)
 """
 
 import os
@@ -34,7 +37,7 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
-from train_cnn_lstm import VideoSequenceDataset
+from src.training.train_cnn_lstm import VideoSequenceDataset
 
 
 # ─── Configuration ───────────────────────────────────────────────────────────
@@ -52,26 +55,20 @@ NUM_WORKERS = 0
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 USE_AMP = torch.cuda.is_available()
 
-LSTM_HIDDEN = 256
-LSTM_LAYERS = 2
-
 
 # ─── Model ───────────────────────────────────────────────────────────────────
-class CNN_LSTM_V2(nn.Module):
+class CNN_Only(nn.Module):
     """
-    ResNet-50 + Unidirectional LSTM for video-level deepfake detection.
-
-    Forward pass:
-        1. Extract ResNet-50 features per frame (2048-d)
-        2. Feed sequence into 2-layer unidirectional LSTM
-        3. Take last hidden state -> FC -> 1 logit
+    ResNet-50 frame-level classifier.
+    Processes each frame independently, then averages predictions
+    across the sequence for a video-level decision.
     """
 
-    def __init__(self, hidden_size=LSTM_HIDDEN, num_layers=LSTM_LAYERS, freeze_cnn=True):
+    def __init__(self, freeze_cnn=True):
         super().__init__()
         self.freeze_cnn = freeze_cnn
 
-        # ResNet-50 backbone
+        # ResNet-50 backbone (remove final FC)
         resnet = models.resnet50(weights=models.ResNet50_Weights.DEFAULT)
         self.cnn_feat_dim = resnet.fc.in_features  # 2048
         self.cnn = nn.Sequential(*list(resnet.children())[:-1])
@@ -80,35 +77,15 @@ class CNN_LSTM_V2(nn.Module):
             for param in self.cnn.parameters():
                 param.requires_grad = False
 
-        # Unidirectional LSTM
-        self.lstm = nn.LSTM(
-            input_size=self.cnn_feat_dim,
-            hidden_size=hidden_size,
-            num_layers=num_layers,
-            batch_first=True,
-            bidirectional=False,  # Key: unidirectional (unlike ST-ViT's BiLSTM)
-            dropout=0.3 if num_layers > 1 else 0.0,
-        )
-
-        # Classifier
+        # Classification head
         self.classifier = nn.Sequential(
-            nn.Linear(hidden_size, 128),
+            nn.Linear(self.cnn_feat_dim, 256),
             nn.ReLU(),
             nn.Dropout(0.5),
-            nn.Linear(128, 1),
+            nn.Linear(256, 1),
         )
 
-        # Init weights
-        for name, param in self.lstm.named_parameters():
-            if "weight_ih" in name:
-                nn.init.xavier_uniform_(param.data)
-            elif "weight_hh" in name:
-                nn.init.orthogonal_(param.data)
-            elif "bias" in name:
-                param.data.fill_(0)
-                n = param.size(0)
-                param.data[n // 4: n // 2].fill_(1.0)
-
+        # Init classifier weights
         for m in self.classifier.modules():
             if isinstance(m, nn.Linear):
                 nn.init.xavier_uniform_(m.weight)
@@ -119,7 +96,7 @@ class CNN_LSTM_V2(nn.Module):
         self.freeze_cnn = False
         for param in self.cnn.parameters():
             param.requires_grad = True
-        print("[CNN+LSTM V2] CNN backbone unfrozen for fine-tuning")
+        print("[CNN-Only] CNN backbone unfrozen for fine-tuning")
 
     def get_parameter_groups(self, lr_cnn, lr_rest):
         cnn_params = list(self.cnn.parameters())
@@ -135,26 +112,28 @@ class CNN_LSTM_V2(nn.Module):
     def forward(self, x):
         """
         Args:
-            x: (B, T, C, H, W)
+            x: (B, T, C, H, W) — batch of video sequences
         Returns:
-            logits: (B, 1)
+            logits: (B, 1) — video-level logit (averaged across frames)
         """
         B, T, C, H, W = x.shape
 
+        # Process all frames through CNN
         x = x.view(B * T, C, H, W)
         if self.freeze_cnn:
             with torch.no_grad():
                 features = self.cnn(x)
         else:
             features = self.cnn(x)
-        features = features.view(B, T, -1)  # (B, T, 2048)
+        features = features.view(B * T, -1)  # (B*T, 2048)
 
-        # LSTM
-        lstm_out, _ = self.lstm(features)      # (B, T, hidden)
-        last_hidden = lstm_out[:, -1, :]       # (B, hidden)
+        # Per-frame logits
+        frame_logits = self.classifier(features)  # (B*T, 1)
+        frame_logits = frame_logits.view(B, T, 1)  # (B, T, 1)
 
-        logits = self.classifier(last_hidden)  # (B, 1)
-        return logits
+        # Average logits across frames for video-level prediction
+        video_logits = frame_logits.mean(dim=1)  # (B, 1)
+        return video_logits
 
 
 # ─── Label Smoothing Loss ────────────────────────────────────────────────────
@@ -240,10 +219,10 @@ def plot_history(history):
     for ax in axes.flat:
         ax.axvline(x=UNFREEZE_CNN_EPOCH, color="green", linestyle="--", alpha=0.5)
 
-    plt.suptitle("CNN+LSTM V2 Training History", fontsize=14, fontweight="bold")
+    plt.suptitle("CNN-Only Training History", fontsize=14, fontweight="bold")
     plt.tight_layout()
-    plt.savefig("cnn_lstm_v2_training_history.png", dpi=150)
-    print("Training history saved to cnn_lstm_v2_training_history.png")
+    plt.savefig("cnn_only_training_history.png", dpi=150)
+    print("Training history saved to cnn_only_training_history.png")
 
 
 # ─── Training Loop ──────────────────────────────────────────────────────────
@@ -273,6 +252,7 @@ def train_model(model, loaders, sizes, criterion, num_epochs=EPOCHS):
             alloc = torch.cuda.memory_allocated() / 1024**2
             print(f"  GPU Memory: {alloc:.0f}MB | LR: {optimizer.param_groups[0]['lr']:.6f}")
 
+        # Progressive unfreezing
         if epoch == UNFREEZE_CNN_EPOCH:
             print("\n  >>> UNFREEZING CNN BACKBONE <<<\n")
             model.unfreeze_cnn()
@@ -352,7 +332,7 @@ def train_model(model, loaders, sizes, criterion, num_epochs=EPOCHS):
                 best_loss = epoch_loss
                 best_acc = epoch_acc
                 best_wts = copy.deepcopy(model.state_dict())
-                torch.save(model.state_dict(), "best_cnn_lstm_v2_model.pth")
+                torch.save(model.state_dict(), "best_cnn_only_model.pth")
                 print("  -> Saved best model checkpoint")
 
         if torch.cuda.is_available():
@@ -400,7 +380,7 @@ def evaluate(model, loader, sizes):
     except ValueError: test_rec = 0.0
 
     print(f"\n{'=' * 50}")
-    print(f"  CNN+LSTM V2 TEST RESULTS")
+    print(f"  CNN-Only TEST RESULTS")
     print(f"  Loss      : {test_loss:.4f}")
     print(f"  Accuracy  : {test_acc:.4f}")
     print(f"  F1 Score  : {test_f1:.4f}")
@@ -415,7 +395,7 @@ def evaluate(model, loader, sizes):
 # ─── Main ────────────────────────────────────────────────────────────────────
 def main():
     print("=" * 60)
-    print("  CNN+LSTM V2 Baseline — Deepfake Detection")
+    print("  CNN-Only Baseline — Deepfake Detection")
     print("=" * 60)
     setup_hardware()
 
@@ -426,7 +406,7 @@ def main():
     loaders, sizes = get_data_loaders()
     print(f"Dataset sizes: {sizes}")
 
-    model = CNN_LSTM_V2(freeze_cnn=True).to(DEVICE)
+    model = CNN_Only(freeze_cnn=True).to(DEVICE)
     total = sum(p.numel() for p in model.parameters())
     trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
     print(f"Parameters: {total:,} total, {trainable:,} trainable")
@@ -434,7 +414,7 @@ def main():
     criterion = LabelSmoothingBCEWithLogitsLoss(smoothing=LABEL_SMOOTHING)
     trained_model, history = train_model(model, loaders, sizes, criterion, EPOCHS)
 
-    torch.save(trained_model.state_dict(), "final_cnn_lstm_v2_model.pth")
+    torch.save(trained_model.state_dict(), "final_cnn_only_model.pth")
     plot_history(history)
     evaluate(trained_model, loaders["test"], sizes)
 

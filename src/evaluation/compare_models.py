@@ -26,7 +26,7 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
-from train_cnn_lstm import VideoSequenceDataset
+from src.training.train_cnn_lstm import VideoSequenceDataset
 
 # ─── Configuration ───────────────────────────────────────────────────────────
 DATA_DIR = "dataset_sequences"

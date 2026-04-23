@@ -14,7 +14,7 @@ import torch
 from torchvision import transforms
 from PIL import Image
 
-from st_vit_model import ST_ViT
+from src.models.st_vit_model import ST_ViT
 
 # ─── Configuration ───────────────────────────────────────────────────────────
 SEQ_LEN = 20
